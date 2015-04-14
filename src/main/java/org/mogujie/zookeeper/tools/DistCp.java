@@ -140,17 +140,23 @@ public class DistCp {
     /**
      * Connect to zk server via host
      * @param zk
+     * @param host
+     * @param readOnly
      * @return host
      */
-    protected ZooKeeper connectToZK(ZooKeeper zk, String host) 
+    protected ZooKeeper connectToZK(ZooKeeper zk, String host, boolean readOnly) 
             throws InterruptedException, IOException {
         if (zk != null && zk.getState().isAlive()) {
             zk.close();
         }
-        boolean readOnly = cl.getOption("readonly") != null;
         return new ZooKeeper(host,
                  Integer.parseInt(cl.getOption("timeout")),
                  new MyWatcher(), readOnly);
+    }
+    
+    protected ZooKeeper connectToZK(ZooKeeper zk, String host) 
+            throws InterruptedException, IOException {
+        return connectToZK(zk, host, false);
     }
     
     public static void main(String args[])
@@ -169,7 +175,9 @@ public class DistCp {
             throw new IOException("Error connectting to " + cl.getOption("server"));
         }
         DistCp.printMessage("Connecting to " + cl.getOption("server"));
-        sourceZk = connectToZK(sourceZk, cl.getOption("from"));
+        
+        // connect to source zk, we should enable readOnly mode
+        sourceZk = connectToZK(sourceZk, cl.getOption("from"), false);
         if (sourceZk == null) {
             throw new IOException("Error connectting to " + cl.getOption("from"));
         }
@@ -178,7 +186,7 @@ public class DistCp {
 
     public void distCopy() throws InterruptedException, KeeperException {
         String path = cl.getOption("path");
-        boolean watch = false;
+        boolean watch = Boolean.getBoolean(cl.getOption("watch"));
         CreateMode createMode = CreateMode.PERSISTENT;
         
         // BFS traverse
