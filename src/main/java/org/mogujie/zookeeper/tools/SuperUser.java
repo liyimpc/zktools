@@ -4,17 +4,31 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
-import org.apache.zookeeper.KeeperException;
-
 public class SuperUser {
 
     public static void main(String[] args) throws IOException,
-            InterruptedException, KeeperException {
+            InterruptedException {
         String passwd = "super:guangming";
-        System.out.println(generateDigest(passwd));
+        if (!parseArgs(args)) {
+          System.err.println("error argument!");
+          System.err.println("please use: sh superUser.sh super:XXXX");
+        } else {
+          passwd = args[0];
+          System.out.println(generateDigest(passwd));
+        }
     }
 
-    static public String generateDigest(String idPassword) {
+    private static boolean parseArgs(String[] args) {
+      if (args.length != 1) {
+        return false;
+      }
+      if (!args[0].startsWith("super")) {
+        return false;
+      }
+      return true;
+    }
+
+    public static String generateDigest(String idPassword) {
         String parts[] = idPassword.split(":", 2);
         byte digest[] = null;
         try {
@@ -26,7 +40,7 @@ public class SuperUser {
         return parts[0] + ":" + base64Encode(digest);
     }
 
-    static final private String base64Encode(byte b[]) {
+    private static final String base64Encode(byte b[]) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < b.length;) {
             int pad = 0;
@@ -57,7 +71,7 @@ public class SuperUser {
         return sb.toString();
     }
 
-    static final private char encode(int i) {
+    private static final char encode(int i) {
         i &= 0x3f;
         if (i < 26) {
             return (char) ('A' + i);
