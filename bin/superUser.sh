@@ -6,7 +6,7 @@ else
   JAVA=java
 fi
 
-Zk_TOOLS_LOG4J_PROP=$baseDir/../conf/log4j.properties
+Zk_TOOLS_LOG4J_PROP=$baseDir/../src/main/resources/log4j.properties
 Zk_TOOLS_LOG_DIR=$baseDir/../logs
 CLASSPATH="$baseDir/../target/classes:$baseDir/../target/zkTools*.jar:$CLASSPATH"
 

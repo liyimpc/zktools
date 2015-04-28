@@ -11,6 +11,7 @@ package org.mogujie.zookeeper.tools;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -19,11 +20,18 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Queue;
 
+import org.apache.curator.RetryPolicy;
+import org.apache.curator.framework.CuratorFramework;
+import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.api.transaction.CuratorTransaction;
+import org.apache.curator.framework.api.transaction.CuratorTransactionBridge;
+import org.apache.curator.framework.api.transaction.CuratorTransactionResult;
+import org.apache.curator.framework.imps.CuratorFrameworkState;
+import org.apache.curator.retry.ExponentialBackoffRetry;
+import org.apache.curator.utils.CloseableUtils;
 import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
@@ -35,19 +43,20 @@ import org.slf4j.LoggerFactory;
  */
 public class DistCp {
   private static final Logger LOG = LoggerFactory.getLogger(DistCp.class);
+  public static final int TIMEOUT_DEFAULT = 30000;
 
   protected MyCommandOptions cl = new MyCommandOptions();
   protected boolean printWatches = true;
 
-  protected ZooKeeper sourceZk;
-  protected ZooKeeper destinationZk;
+  protected CuratorFramework sourceClient;
+  protected CuratorFramework destinationClient;
 
   public boolean getPrintWatches() {
     return printWatches;
   }
 
   static void usage() {
-    DistCp.printMessage("DistCp -from host:port -to host:port "
+    LOG.info("DistCp -from host:port -to host:port "
         + "-path path [watch] [-timeout time]");
   }
 
@@ -55,8 +64,8 @@ public class DistCp {
     @Override
     public void process(WatchedEvent event) {
       if (getPrintWatches()) {
-        DistCp.printMessage("WATCHER::");
-        DistCp.printMessage(event.toString());
+        LOG.info("WATCHER::");
+        LOG.info(event.toString());
       }
     }
   }
@@ -72,7 +81,7 @@ public class DistCp {
     private String command = null;
 
     public MyCommandOptions() {
-      options.put("timeout", "30000");
+      options.put("timeout", String.valueOf(TIMEOUT_DEFAULT));
       options.put("path", "/");
       options.put("watch", String.valueOf(false));
     }
@@ -140,38 +149,23 @@ public class DistCp {
     }
   }
 
-  public static void printMessage(String msg) {
-    System.out.println("\n" + msg);
+  protected CuratorFramework getClient(String connectString, boolean readOnly, int timeout) {
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
+    CuratorFramework client = CuratorFrameworkFactory.builder()
+        .connectString(connectString)
+        .sessionTimeoutMs(timeout)
+        .connectionTimeoutMs(timeout)
+        .canBeReadOnly(readOnly)
+        .retryPolicy(retryPolicy)
+        .build();
+    return client;
   }
 
-  /**
-   * Connect to zk server via host
-   *
-   * @param zk
-   * @param host
-   * @param readOnly
-   * @return host
-   */
-  protected ZooKeeper connectToZK(ZooKeeper zk, String host, boolean readOnly)
-      throws InterruptedException, IOException {
-    if (zk != null && zk.getState().isAlive()) {
-      zk.close();
-    }
-    return new ZooKeeper(host, Integer.parseInt(cl.getOption("timeout")),
-        new MyWatcher(), readOnly);
-  }
-
-  protected ZooKeeper connectToZK(ZooKeeper zk, String host)
-      throws InterruptedException, IOException {
-    return connectToZK(zk, host, false);
-  }
-
-  public static void main(String args[]) throws KeeperException, IOException,
-      InterruptedException {
+  public static void main(String args[]) throws Exception {
     DistCp distCp = new DistCp(args);
     distCp.distCopy();
-    distCp.clear();
-    DistCp.printMessage("copy fininshed");
+    LOG.info("copy fininshed");
+    System.out.println("copy fininshed");
   }
 
   public DistCp(String args[]) throws IOException, InterruptedException {
@@ -180,17 +174,19 @@ public class DistCp {
       System.exit(0);
     }
 
-    // connect to source zk, we should enable readOnly mode
-    sourceZk = connectToZK(sourceZk, cl.getOption("source"), false);
-    if (sourceZk == null) {
+    // get source curator client, we should enable readOnly mode
+    sourceClient = getClient(cl.getOption("source"), true,
+       Integer.valueOf(cl.getOption("timeout")));
+    if (sourceClient == null) {
       LOG.error("Error connectting to " + cl.getOption("source"));
       throw new IOException("Error connectting to " + cl.getOption("source"));
     }
     LOG.info("Connecting to " + cl.getOption("source"));
 
-    // connect to destination zk
-    destinationZk = connectToZK(destinationZk, cl.getOption("destination"));
-    if (destinationZk == null) {
+    // get destination curator client
+    destinationClient = getClient(cl.getOption("destination"), false,
+        Integer.valueOf(cl.getOption("timeout")));
+    if (destinationClient == null) {
       LOG.error("Error connectting to " + cl.getOption("destination"));
       throw new IOException("Error connectting to "
           + cl.getOption("destination"));
@@ -198,48 +194,81 @@ public class DistCp {
     LOG.info("Connecting to " + cl.getOption("destination"));
   }
 
-  public void distCopy() throws InterruptedException, KeeperException {
+  public void distCopy() throws Exception {
     String path = cl.getOption("path");
-    boolean watch = Boolean.getBoolean(cl.getOption("watch"));
+//    boolean watch = Boolean.getBoolean(cl.getOption("watch"));
     CreateMode createMode = CreateMode.PERSISTENT;
+    boolean firstCreate = true;
 
-    // BFS traverse
-    Queue<String> queue = new LinkedList<String>();
-    if (sourceZk.exists(path, watch) != null) {
-      queue.add(path);
-    }
-    while (!queue.isEmpty()) {
-      String parent = queue.poll();
-      Stat stat = new Stat();
-      byte[] data = sourceZk.getData(parent, watch, stat);
-      // if this znode is Ephemeral, we don't need to copy it
-      if (stat.getEphemeralOwner() != 0) {
-        LOG.info("znode " + stat.toString() + " is Ephemeral");
-        continue;
+    try {
+      if (sourceClient.getState() != CuratorFrameworkState.STARTED) {
+        sourceClient.start();
       }
-      List<ACL> acls = sourceZk.getACL(parent, new Stat());
-      destinationZk.create(parent, data, acls, createMode);
-      LOG.info("create path " + parent + "successfully!");
 
-      List<String> childs = sourceZk.getChildren(parent, watch);
-      if (childs != null && !childs.isEmpty()) {
-        for (String child : childs) {
-          String absoluteChild = parent + "/" + child;
-          queue.add(absoluteChild);
+      if (destinationClient.getState() != CuratorFrameworkState.STARTED) {
+        destinationClient.start();
+      }
+
+      // start transaction
+      CuratorTransaction transaction = destinationClient.inTransaction();
+      CuratorTransactionBridge bridge = null;
+
+      LOG.info("start discopy...");
+      System.out.println("start distCopy...");
+
+      // BFS traverse
+      Queue<String> queue = new LinkedList<String>();
+      if (sourceClient.checkExists().forPath(path) != null) {
+        queue.add(path);
+      }
+      while (!queue.isEmpty()) {
+        String parent = queue.poll();
+        Stat stat = sourceClient.checkExists().forPath(path);
+        byte[] data = sourceClient.getData().forPath(parent);
+        // if this znode is Ephemeral, we don't need to copy it
+        if (stat.getEphemeralOwner() != 0) {
+          LOG.info("znode " + stat.toString() + " is Ephemeral");
+          continue;
+        }
+        List<ACL> acls = sourceClient.getACL().forPath(parent);
+
+        // create znode to destination zk
+        if (firstCreate) {
+          bridge = transaction
+            .create()
+            .withMode(createMode)
+            .withACL(acls)
+            .forPath(parent, data);
+          firstCreate = false;
+        } else {
+          bridge = bridge.and()
+            .create()
+            .withMode(createMode)
+            .withACL(acls)
+            .forPath(parent, data);
+        }
+
+        List<String> childs = sourceClient.getChildren().forPath(parent);
+        if (childs != null && !childs.isEmpty()) {
+          for (String child : childs) {
+            String absoluteChild = parent + "/" + child;
+            queue.add(absoluteChild);
+          }
         }
       }
-    }
-  }
-
-  public void clear() throws InterruptedException {
-    if (sourceZk != null && sourceZk.getState().isAlive()) {
+      // commit transaction
+      Collection<CuratorTransactionResult> results = bridge.and().commit();
+      for (CuratorTransactionResult result : results) {
+        LOG.info(result.getForPath() + " - " + result.getType());
+      }
+    } finally {
+      CloseableUtils.closeQuietly(sourceClient);
+      sourceClient = null;
       LOG.info("Close " + cl.getOption("source"));
-      sourceZk.close();
-    }
 
-    if (destinationZk != null && destinationZk.getState().isAlive()) {
+      CloseableUtils.closeQuietly(destinationClient);
+      destinationClient = null;
       LOG.info("Close " + cl.getOption("destination"));
-      destinationZk.close();
     }
   }
 }
