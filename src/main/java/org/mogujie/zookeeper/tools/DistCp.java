@@ -194,74 +194,89 @@ public class DistCp {
     LOG.info("Connecting to " + cl.getOption("destination"));
   }
 
+  /**
+   * copy from client 'from' to client 'to'
+   *
+   * @param from
+   * @param to
+   * @param path
+   */
+  public static void copy(CuratorFramework from, CuratorFramework to, String path)
+      throws Exception {
+    CreateMode createMode = CreateMode.PERSISTENT;
+    boolean firstCreate = true;
+    // start transaction
+    CuratorTransaction transaction = to.inTransaction();
+    CuratorTransactionBridge bridge = null;
+
+    LOG.info("start discopy...");
+    System.out.println("start distCopy...");
+
+    // BFS traverse
+    Queue<String> queue = new LinkedList<String>();
+    if (from.checkExists().forPath(path) != null) {
+      queue.add(path);
+    }
+    while (!queue.isEmpty()) {
+      String parent = queue.poll();
+      Stat stat = from.checkExists().forPath(path);
+      byte[] data = from.getData().forPath(parent);
+      // if this znode is Ephemeral, we don't need to copy it
+      if (stat.getEphemeralOwner() != 0) {
+        LOG.info("znode " + stat.toString() + " is Ephemeral");
+        continue;
+      }
+      List<ACL> acls = from.getACL().forPath(parent);
+
+      // create znode to destination zk
+      if (firstCreate) {
+        bridge = transaction
+          .create()
+          .withMode(createMode)
+          .withACL(acls)
+          .forPath(parent, data);
+        firstCreate = false;
+      } else {
+        bridge = bridge.and()
+          .create()
+          .withMode(createMode)
+          .withACL(acls)
+          .forPath(parent, data);
+      }
+
+      List<String> childs = from.getChildren().forPath(parent);
+      if (childs != null && !childs.isEmpty()) {
+        for (String child : childs) {
+          String absoluteChild = parent + "/" + child;
+          queue.add(absoluteChild);
+        }
+      }
+    }
+
+    // commit transaction
+    Collection<CuratorTransactionResult> results = bridge.and().commit();
+    for (CuratorTransactionResult result : results) {
+      LOG.info(result.getForPath() + " - " + result.getType());
+    }
+  }
+
   public void distCopy() throws Exception {
     String path = cl.getOption("path");
 //    boolean watch = Boolean.getBoolean(cl.getOption("watch"));
-    CreateMode createMode = CreateMode.PERSISTENT;
-    boolean firstCreate = true;
-
     try {
+      // 1. open client
       if (sourceClient.getState() != CuratorFrameworkState.STARTED) {
         sourceClient.start();
       }
-
       if (destinationClient.getState() != CuratorFrameworkState.STARTED) {
         destinationClient.start();
       }
 
-      // start transaction
-      CuratorTransaction transaction = destinationClient.inTransaction();
-      CuratorTransactionBridge bridge = null;
+      // 2. copy from source to destination
+      copy(sourceClient, destinationClient, path);
 
-      LOG.info("start discopy...");
-      System.out.println("start distCopy...");
-
-      // BFS traverse
-      Queue<String> queue = new LinkedList<String>();
-      if (sourceClient.checkExists().forPath(path) != null) {
-        queue.add(path);
-      }
-      while (!queue.isEmpty()) {
-        String parent = queue.poll();
-        Stat stat = sourceClient.checkExists().forPath(path);
-        byte[] data = sourceClient.getData().forPath(parent);
-        // if this znode is Ephemeral, we don't need to copy it
-        if (stat.getEphemeralOwner() != 0) {
-          LOG.info("znode " + stat.toString() + " is Ephemeral");
-          continue;
-        }
-        List<ACL> acls = sourceClient.getACL().forPath(parent);
-
-        // create znode to destination zk
-        if (firstCreate) {
-          bridge = transaction
-            .create()
-            .withMode(createMode)
-            .withACL(acls)
-            .forPath(parent, data);
-          firstCreate = false;
-        } else {
-          bridge = bridge.and()
-            .create()
-            .withMode(createMode)
-            .withACL(acls)
-            .forPath(parent, data);
-        }
-
-        List<String> childs = sourceClient.getChildren().forPath(parent);
-        if (childs != null && !childs.isEmpty()) {
-          for (String child : childs) {
-            String absoluteChild = parent + "/" + child;
-            queue.add(absoluteChild);
-          }
-        }
-      }
-      // commit transaction
-      Collection<CuratorTransactionResult> results = bridge.and().commit();
-      for (CuratorTransactionResult result : results) {
-        LOG.info(result.getForPath() + " - " + result.getType());
-      }
     } finally {
+      // 3. close client
       CloseableUtils.closeQuietly(sourceClient);
       sourceClient = null;
       LOG.info("Close " + cl.getOption("source"));
