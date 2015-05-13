@@ -57,7 +57,7 @@ public class DistCp {
 
   static void usage() {
     LOG.info("DistCp -from host:port -to host:port "
-        + "-path path [watch] [-timeout time]");
+        + "-path path [-prefix prefix] [watch] [-timeout time]");
   }
 
   private class MyWatcher implements Watcher {
@@ -83,6 +83,7 @@ public class DistCp {
     public MyCommandOptions() {
       options.put("timeout", String.valueOf(TIMEOUT_DEFAULT));
       options.put("path", "/");
+      options.put("prefix", "");
       options.put("watch", String.valueOf(false));
     }
 
@@ -127,6 +128,8 @@ public class DistCp {
             options.put("destination", it.next());
           } else if (opt.equals("-path")) {
             options.put("path", it.next());
+          } else if (opt.equals("-prefix")) {
+            options.put("prefix", it.next());
           } else if (opt.equals("watch")) {
             options.put("watch", String.valueOf(true));
           } else if (opt.equals("-h") || opt.equals("-help")) {
@@ -200,14 +203,39 @@ public class DistCp {
    * @param from
    * @param to
    * @param path
+   * @param prefix
+   * @throws Exception
    */
-  public static void copy(CuratorFramework from, CuratorFramework to, String path)
+  public static void copy(CuratorFramework from, CuratorFramework to,
+      String path) throws Exception {
+    copy(from, to, path, "");
+  }
+
+  /**
+   * copy from client 'from' to client 'to'
+   *
+   * @param from
+   * @param to
+   * @param path
+   * @param prefix
+   * @throws Exception
+   */
+  public static void copy(CuratorFramework from, CuratorFramework to,
+      String path, String prefix)
       throws Exception {
     CreateMode createMode = CreateMode.PERSISTENT;
     boolean firstCreate = true;
+
+    // if prefix is not existed, first create prefix
+    if (prefix != null && !prefix.isEmpty()
+        && to.checkExists().forPath(prefix) == null ) {
+      to.create().creatingParentsIfNeeded().forPath(prefix);
+    }
+
     // start transaction
     CuratorTransaction transaction = to.inTransaction();
     CuratorTransactionBridge bridge = null;
+
 
     LOG.info("start discopy...");
     System.out.println("start distCopy...");
@@ -229,19 +257,20 @@ public class DistCp {
       List<ACL> acls = from.getACL().forPath(parent);
 
       // create znode to destination zk
+      String destinationParent = prefix + parent;
       if (firstCreate) {
         bridge = transaction
           .create()
           .withMode(createMode)
           .withACL(acls)
-          .forPath(parent, data);
+          .forPath(destinationParent, data);
         firstCreate = false;
       } else {
         bridge = bridge.and()
           .create()
           .withMode(createMode)
           .withACL(acls)
-          .forPath(parent, data);
+          .forPath(destinationParent, data);
       }
 
       List<String> childs = from.getChildren().forPath(parent);
@@ -262,6 +291,7 @@ public class DistCp {
 
   public void distCopy() throws Exception {
     String path = cl.getOption("path");
+    String prefix = cl.getOption("prefix");
 //    boolean watch = Boolean.getBoolean(cl.getOption("watch"));
     try {
       // 1. open client
@@ -273,7 +303,7 @@ public class DistCp {
       }
 
       // 2. copy from source to destination
-      copy(sourceClient, destinationClient, path);
+      copy(sourceClient, destinationClient, path, prefix);
 
     } finally {
       // 3. close client

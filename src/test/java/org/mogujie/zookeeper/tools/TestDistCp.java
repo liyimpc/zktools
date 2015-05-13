@@ -70,4 +70,37 @@ public class TestDistCp {
       CloseableUtils.closeQuietly(client2);
     }
   }
+
+  @Test
+  public void testDistCopyWithPrefix() throws Exception {
+    CuratorFramework client1 = CuratorFrameworkFactory.builder()
+        .connectString(cluster1.getConnectString())
+        .canBeReadOnly(true)
+        .retryPolicy(new ExponentialBackoffRetry(100, 3))
+        .build();
+
+    CuratorFramework client2 = CuratorFrameworkFactory.builder()
+        .connectString(cluster2.getConnectString())
+        .canBeReadOnly(true)
+        .retryPolicy(new ExponentialBackoffRetry(100, 3))
+        .build();
+    try {
+      client1.start();
+      client2.start();
+
+      client1.create().forPath("/test", "test".getBytes());
+      client1.create().forPath("/test/test1", "test1".getBytes());
+      client1.create().forPath("/test/test2", "test2".getBytes());
+
+      DistCp.copy(client1, client2, "/test", "/bda");
+
+      Assert.assertEquals("test", new String(client2.getData().forPath("/bda/test")));
+      Assert.assertEquals("test1", new String(client2.getData().forPath("/bda/test/test1")));
+      Assert.assertEquals("test2", new String(client2.getData().forPath("/bda/test/test2")));
+
+    } finally {
+      CloseableUtils.closeQuietly(client1);
+      CloseableUtils.closeQuietly(client2);
+    }
+  }
 }
