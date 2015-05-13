@@ -10,7 +10,9 @@
 
 ### 使用
 1. 首先编译: mvn clean install -DskipTests
-2. distCopy使用: sh distCopy.sh -from 10.15.8.24:9261 -to 127.0.0.1:2181 [watch] [-timeout time]
+2. distCopy使用: sh distCopy.sh -from host:port -to host:port -path path [-prefix prefix] [watch] [-timeout time]  
+   比如 sh disCopy.sh -from 10.15.8.24:2181 -to 10.15.8.27:2181 -path /hbase -prefix /bda/hbase1  
+   将拷贝10.15.8.24这台zk /hbase下的路径到10.15.8.27这台zk /bda/hbase1/hbase下
 3. superUser使用:  
   3.1 sh superUser.sh super:guangming  
   3.2 产生加密后的密文: super:V56e0FnimNzScgvwtE1Jy1uwlIc=  
