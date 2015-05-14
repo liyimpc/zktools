@@ -57,7 +57,7 @@ public class DistCp {
 
   static void usage() {
     LOG.info("DistCp -from host:port -to host:port "
-        + "-path path [-prefix prefix] [watch] [-timeout time]");
+        + "-srcpath srcpath [-despath despath] [watch] [-timeout time]");
   }
 
   private class MyWatcher implements Watcher {
@@ -82,7 +82,7 @@ public class DistCp {
 
     public MyCommandOptions() {
       options.put("timeout", String.valueOf(TIMEOUT_DEFAULT));
-      options.put("path", "/");
+      options.put("srcpath", "/");
       options.put("prefix", "");
       options.put("watch", String.valueOf(false));
     }
@@ -126,8 +126,10 @@ public class DistCp {
             options.put("source", it.next());
           } else if (opt.equals("-to")) {
             options.put("destination", it.next());
-          } else if (opt.equals("-path")) {
-            options.put("path", it.next());
+          } else if (opt.equals("-srcpath")) {
+            options.put("srcpath", it.next());
+          } else if (opt.equals("-despath")) {
+            options.put("despath", it.next());
           } else if (opt.equals("-prefix")) {
             options.put("prefix", it.next());
           } else if (opt.equals("watch")) {
@@ -203,12 +205,11 @@ public class DistCp {
    * @param from
    * @param to
    * @param path
-   * @param prefix
    * @throws Exception
    */
   public static void copy(CuratorFramework from, CuratorFramework to,
       String path) throws Exception {
-    copy(from, to, path, "");
+    copy(from, to, path, path);
   }
 
   /**
@@ -216,17 +217,19 @@ public class DistCp {
    *
    * @param from
    * @param to
-   * @param path
-   * @param prefix
+   * @param srcpath
+   * @param despath
    * @throws Exception
    */
   public static void copy(CuratorFramework from, CuratorFramework to,
-      String path, String prefix)
+      String srcpath, String despath)
       throws Exception {
     CreateMode createMode = CreateMode.PERSISTENT;
     boolean firstCreate = true;
 
-    // if prefix is not existed, first create prefix
+    // if parent of destination path is not existed,
+    // first create parent path
+    String prefix = despath.substring(0, despath.lastIndexOf("/"));
     if (prefix != null && !prefix.isEmpty()
         && to.checkExists().forPath(prefix) == null ) {
       to.create().creatingParentsIfNeeded().forPath(prefix);
@@ -236,48 +239,54 @@ public class DistCp {
     CuratorTransaction transaction = to.inTransaction();
     CuratorTransactionBridge bridge = null;
 
-
     LOG.info("start discopy...");
     System.out.println("start distCopy...");
 
     // BFS traverse
-    Queue<String> queue = new LinkedList<String>();
-    if (from.checkExists().forPath(path) != null) {
-      queue.add(path);
+    Queue<MyPair> queue = new LinkedList<MyPair>();
+    if (from.checkExists().forPath(srcpath) != null) {
+      MyPair pairParent = new MyPair();
+      pairParent.setSrcParent(srcpath);
+      pairParent.setDesParent(despath);
+      queue.add(pairParent);
     }
     while (!queue.isEmpty()) {
-      String parent = queue.poll();
-      Stat stat = from.checkExists().forPath(path);
-      byte[] data = from.getData().forPath(parent);
+      MyPair pair = queue.poll();
+      String srcparent = pair.getSrcParent();
+      String desparent = pair.getDesParent();
+
+      Stat stat = from.checkExists().forPath(srcparent);
+      byte[] data = from.getData().forPath(srcparent);
       // if this znode is Ephemeral, we don't need to copy it
       if (stat.getEphemeralOwner() != 0) {
         LOG.info("znode " + stat.toString() + " is Ephemeral");
         continue;
       }
-      List<ACL> acls = from.getACL().forPath(parent);
+      List<ACL> acls = from.getACL().forPath(srcparent);
 
       // create znode to destination zk
-      String destinationParent = prefix + parent;
       if (firstCreate) {
         bridge = transaction
           .create()
           .withMode(createMode)
           .withACL(acls)
-          .forPath(destinationParent, data);
+          .forPath(desparent, data);
         firstCreate = false;
       } else {
         bridge = bridge.and()
           .create()
           .withMode(createMode)
           .withACL(acls)
-          .forPath(destinationParent, data);
+          .forPath(desparent, data);
       }
 
-      List<String> childs = from.getChildren().forPath(parent);
+      List<String> childs = from.getChildren().forPath(srcparent);
       if (childs != null && !childs.isEmpty()) {
         for (String child : childs) {
-          String absoluteChild = parent + "/" + child;
-          queue.add(absoluteChild);
+          MyPair pairChild = new MyPair();
+          pairChild.setSrcParent(srcparent + "/" + child);
+          pairChild.setDesParent(desparent + "/" + child);
+          queue.add(pairChild);
         }
       }
     }
@@ -290,8 +299,8 @@ public class DistCp {
   }
 
   public void distCopy() throws Exception {
-    String path = cl.getOption("path");
-    String prefix = cl.getOption("prefix");
+    String srcpath = cl.getOption("srcpath");
+    String despath = cl.getOption("despath");
 //    boolean watch = Boolean.getBoolean(cl.getOption("watch"));
     try {
       // 1. open client
@@ -303,7 +312,11 @@ public class DistCp {
       }
 
       // 2. copy from source to destination
-      copy(sourceClient, destinationClient, path, prefix);
+      if (despath != null && !despath.isEmpty()){
+        copy(sourceClient, destinationClient, srcpath, despath);
+      } else {
+        copy(sourceClient, destinationClient, srcpath);
+      }
 
     } finally {
       // 3. close client
